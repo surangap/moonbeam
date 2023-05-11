@@ -7,9 +7,9 @@ import { describeDevMoonbeam } from "../../util/setup-dev-tests";
 import { getCompiled } from "../../util/contracts";
 import { ethers } from "ethers";
 import {
-  ALITH_TRANSACTION_TEMPLATE,
-  BALTATHAR_TRANSACTION_TEMPLATE,
-  createTransaction,
+    ALITH_TRANSACTION_TEMPLATE,
+    BALTATHAR_TRANSACTION_TEMPLATE, CHARLETH_TRANSACTION_TEMPLATE,
+    createTransaction,
 } from "../../util/transactions";
 import {
   CONTRACT_PROXY_TYPE_ANY,
@@ -462,4 +462,66 @@ describeDevMoonbeam("Pallet proxy - shouldn't accept instant for delayed proxy",
     const afterCharlethBalance = BigInt(await context.web3.eth.getBalance(CHARLETH_ADDRESS));
     expect(afterCharlethBalance - beforeCharlethBalance).to.be.eq(0n);
   });
+});
+
+describeDevMoonbeam("Pallet proxy - precompile proxy call value transfer - double charge to caller issue", (context) => {
+    it.only("precompile proxy call value transfer - double charge to caller issue", async () => {
+        // Make charlie a proxy of alice
+        const {
+            result: { events },
+        } = await context.createBlock(
+            createTransaction(context, {
+                ...ALITH_TRANSACTION_TEMPLATE,
+                to: PRECOMPILE_PROXY_ADDRESS,
+                data: PROXY_INTERFACE.encodeFunctionData("addProxy", [
+                    CHARLETH_ADDRESS,
+                    CONTRACT_PROXY_TYPE_ANY,
+                    0,
+                ]),
+            })
+        );
+        expectEVMResult(events, "Succeed");
+
+        // note the balance now
+        const beforeCharlethBalance = BigInt(await context.web3.eth.getBalance(CHARLETH_ADDRESS));
+        const beforeAlithBalance = BigInt(await context.web3.eth.getBalance(ALITH_ADDRESS));
+        const otherAddress = await context.web3.eth.accounts.create();
+        const beforeOtherBalance = BigInt(await context.web3.eth.getBalance(otherAddress.address));
+        const beforeProxyPrecompileBalance = BigInt(await context.web3.eth.getBalance(PRECOMPILE_PROXY_ADDRESS));
+
+        // call precompile proxy to send otherAddress a value of 10^20 (use a big value for the visibility in diff)
+        const {
+            result: { events: events2, hash: hash2 },
+        } = await context.createBlock(
+            createTransaction(context, {
+                ...CHARLETH_TRANSACTION_TEMPLATE,
+                to: PRECOMPILE_PROXY_ADDRESS,
+                data: PROXY_INTERFACE.encodeFunctionData("proxy", [ALITH_ADDRESS, otherAddress.address, []]),
+                value: "0x056BC75E2D63100000", //10^20
+            })
+        );
+        expectEVMResult(events2, "Succeed");
+        //check balances
+        const afterOtherBalance = BigInt(await context.web3.eth.getBalance(otherAddress.address));
+        const afterCharlethBalance = BigInt(await context.web3.eth.getBalance(CHARLETH_ADDRESS));
+        const afterAlithBalance = BigInt(await context.web3.eth.getBalance(ALITH_ADDRESS));
+        const afterProxyPrecompileBalance = BigInt(await context.web3.eth.getBalance(PRECOMPILE_PROXY_ADDRESS));
+
+        console.log("\n---balances before---")
+        console.log("other: ", beforeOtherBalance)
+        console.log("proxyPreocmpile:", beforeProxyPrecompileBalance)
+        console.log("charlie:", beforeCharlethBalance)
+        console.log("alith:", beforeAlithBalance)
+
+        console.log("\n---balances after---")
+        console.log("other: ", afterOtherBalance)
+        console.log("proxyPreocmpile:", afterProxyPrecompileBalance) // <- here the precompile should not have final balance of 10^20
+        console.log("charlie:", afterCharlethBalance)
+        console.log("alith:", afterAlithBalance)
+
+        //check that charlie is charged more than 10^20 (twice 10^20 + gas)
+        const charlieBalanceDiff = beforeCharlethBalance - afterCharlethBalance;
+        console.log("charlie balance diff: ", charlieBalanceDiff);
+        expect(charlieBalanceDiff > 2 * Math.pow(10, 20)).to.true;
+    });
 });
